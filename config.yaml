@@ -1,0 +1,44 @@
+# Model Configuration
+model:
+  type: "hybrid_cnn_rnn"
+  cnn_channels: [64, 128, 256]
+  rnn_hidden_size: 256
+  rnn_num_layers: 2
+  attention_dim: 128
+  dropout: 0.5
+  num_classes: 4  # normal, wheeze, crackle, both
+
+# Feature Extraction
+features:
+  sample_rate: 16000
+  n_fft: 2048
+  hop_length: 512
+  n_mels: 128
+  n_mfcc: 40
+  duration:  8.0  # seconds
+
+# Training
+training:
+  batch_size: 32
+  num_epochs: 100
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  patience: 15  # early stopping
+  num_workers: 4
+
+# Data Augmentation
+augmentation: 
+  time_stretch: true
+  pitch_shift: true
+  noise_injection: true
+  mixup: false
+  
+# Paths
+paths:
+  data_dir: "./data/icbhi"
+  checkpoint_dir: "./checkpoints"
+  log_dir: "./logs"
+
+# Other
+device: "cuda"  # cuda or cpu
+seed: 42

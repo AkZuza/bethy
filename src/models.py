@@ -1,0 +1,183 @@
+"""
+Hybrid CNN-RNN-Attention model for breath sound classification
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Tuple
+
+
+class AttentionLayer(nn.Module):
+    """Attention mechanism for focusing on important features"""
+    
+    def __init__(self, hidden_dim: int, attention_dim: int):
+        super().__init__()
+        self.attention = nn.Sequential(
+            nn.Linear(hidden_dim, attention_dim),
+            nn.Tanh(),
+            nn.Linear(attention_dim, 1)
+        )
+    
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            x: (batch, seq_len, hidden_dim)
+        Returns:
+            context: (batch, hidden_dim)
+            attention_weights: (batch, seq_len)
+        """
+        # Compute attention scores
+        attention_scores = self. attention(x).squeeze(-1)  # (batch, seq_len)
+        attention_weights = F.softmax(attention_scores, dim=1)  # (batch, seq_len)
+        
+        # Apply attention weights
+        context = torch.bmm(
+            attention_weights.unsqueeze(1),  # (batch, 1, seq_len)
+            x  # (batch, seq_len, hidden_dim)
+        ).squeeze(1)  # (batch, hidden_dim)
+        
+        return context, attention_weights
+
+
+class CNNBlock(nn.Module):
+    """CNN block for feature extraction from spectrograms"""
+    
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.dropout = nn.Dropout2d(0.25)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = self.pool(x)
+        x = self.dropout(x)
+        return x
+
+
+class HybridCNNRNNAttention(nn.Module):
+    """
+    Hybrid CNN-RNN-Attention model for breath sound classification
+    
+    Architecture:
+    1. CNN layers extract spatial features from spectrograms
+    2. Bidirectional LSTM captures temporal patterns
+    3. Attention mechanism focuses on important time steps
+    4. Fully connected layers for classification
+    """
+    
+    def __init__(
+        self,
+        input_channels: int = 1,
+        cnn_channels: list = [64, 128, 256],
+        rnn_hidden_size: int = 256,
+        rnn_num_layers: int = 2,
+        attention_dim: int = 128,
+        num_classes: int = 4,
+        dropout: float = 0.5
+    ):
+        super().__init__()
+        
+        self.input_channels = input_channels
+        self.num_classes = num_classes
+        
+        # CNN Feature Extractor
+        self.cnn_blocks = nn.ModuleList()
+        in_ch = input_channels
+        for out_ch in cnn_channels: 
+            self.cnn_blocks.append(CNNBlock(in_ch, out_ch))
+            in_ch = out_ch
+        
+        # Calculate CNN output size (depends on input size and pooling)
+        # After 3 pooling layers with stride 2: size / 8
+        self.cnn_output_channels = cnn_channels[-1]
+        
+        # Bidirectional LSTM
+        self.lstm = nn.LSTM(
+            input_size=self.cnn_output_channels,
+            hidden_size=rnn_hidden_size,
+            num_layers=rnn_num_layers,
+            batch_first=True,
+            dropout=dropout if rnn_num_layers > 1 else 0,
+            bidirectional=True
+        )
+        
+        # Attention
+        self.attention = AttentionLayer(
+            hidden_dim=rnn_hidden_size * 2,  # *2 for bidirectional
+            attention_dim=attention_dim
+        )
+        
+        # Classification head
+        self.classifier = nn.Sequential(
+            nn.Linear(rnn_hidden_size * 2, 512),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(256, num_classes)
+        )
+    
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            x: (batch, channels, height, width) - spectrogram
+        Returns:
+            logits: (batch, num_classes)
+            attention_weights: (batch, seq_len)
+        """
+        batch_size = x.size(0)
+        
+        # CNN feature extraction
+        for cnn_block in self.cnn_blocks:
+            x = cnn_block(x)
+        
+        # x shape: (batch, channels, height, width)
+        # Reshape for RNN:  combine height dimension with time dimension
+        x = x.permute(0, 3, 2, 1)  # (batch, width, height, channels)
+        x = x.reshape(batch_size, x.size(1), -1)  # (batch, time_steps, features)
+        
+        # LSTM
+        lstm_out, _ = self.lstm(x)  # (batch, seq_len, hidden_size * 2)
+        
+        # Attention
+        context, attention_weights = self.attention(lstm_out)
+        
+        # Classification
+        logits = self.classifier(context)
+        
+        return logits, attention_weights
+    
+    def predict_proba(self, x: torch.Tensor) -> torch.Tensor:
+        """Get probability predictions"""
+        logits, _ = self.forward(x)
+        probas = F.softmax(logits, dim=1)
+        return probas
+
+
+def create_model(config: dict, device: torch.device) -> nn.Module:
+    """Create model from configuration"""
+    model_config = config['model']
+    
+    # Determine input channels based on features
+    # mel_spectrogram (128) + mfcc (40) = 168
+    input_channels = 1  # Will be reshaped in dataset
+    
+    model = HybridCNNRNNAttention(
+        input_channels=input_channels,
+        cnn_channels=model_config['cnn_channels'],
+        rnn_hidden_size=model_config['rnn_hidden_size'],
+        rnn_num_layers=model_config['rnn_num_layers'],
+        attention_dim=model_config['attention_dim'],
+        num_classes=model_config['num_classes'],
+        dropout=model_config['dropout']
+    )
+    
+    model = model.to(device)
+    return model
