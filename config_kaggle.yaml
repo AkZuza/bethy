@@ -37,7 +37,7 @@ augmentation:
 # Paths - Kaggle specific
 paths:
   # Update this to match your Kaggle dataset path
-  data_dir: "/kaggle/input/respiratory-sound-database/Respiratory_Sound_Database/Respiratory_Sound_Database"
+  data_dir: "/kaggle/input/dataset/dataset"
   checkpoint_dir: "/kaggle/working/checkpoints"
   log_dir: "/kaggle/working/logs"
 
