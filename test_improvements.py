@@ -13,11 +13,25 @@ def test_feature_normalization():
     """Test that feature normalization works correctly"""
     print("Testing feature normalization...")
     
-    extractor = FeatureExtractor()
+    # Use default feature extractor config
+    config = {
+        'sample_rate': 16000,
+        'n_fft': 2048,
+        'hop_length': 512,
+        'n_mels': 128,
+        'n_mfcc': 40,
+        'duration': 8.0
+    }
     
-    # Create dummy features
-    dummy_mel = torch.randn(1, 128, 250)  # (channels, freq, time)
-    dummy_mfcc = torch.randn(1, 40, 250)
+    extractor = FeatureExtractor(**config)
+    
+    # Create dummy features with shapes matching config
+    n_mels = config['n_mels']
+    n_mfcc = config['n_mfcc']
+    time_frames = 250  # Approximate frames for 8 seconds of audio
+    
+    dummy_mel = torch.randn(1, n_mels, time_frames)  # (channels, freq, time)
+    dummy_mfcc = torch.randn(1, n_mfcc, time_frames)
     
     # Normalize
     mel_norm = extractor.normalize(dummy_mel)
@@ -32,10 +46,11 @@ def test_feature_normalization():
     
     # Combine features
     combined = torch.cat([mel_norm, mfcc_norm], dim=1)
+    expected_shape = (1, n_mels + n_mfcc, time_frames)
     print(f"  Combined shape: {combined.shape}")
-    print(f"  Expected: (1, 168, 250)")
+    print(f"  Expected: {expected_shape}")
     
-    assert combined.shape == (1, 168, 250), f"Unexpected shape: {combined.shape}"
+    assert combined.shape == expected_shape, f"Unexpected shape: {combined.shape}"
     print("✓ Feature normalization test passed!\n")
 
 def test_model_initialization():

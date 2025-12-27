@@ -28,8 +28,7 @@ def train_epoch(
     optimizer: optim.Optimizer,
     device: torch.device,
     epoch: int,
-    writer: SummaryWriter = None,
-    log_gradients: bool = False
+    writer: SummaryWriter = None
 ) -> tuple:
     """Train for one epoch"""
     model.train()

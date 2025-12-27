@@ -28,7 +28,7 @@ class AttentionLayer(nn.Module):
             attention_weights: (batch, seq_len)
         """
         # Compute attention scores
-        attention_scores = self. attention(x).squeeze(-1)  # (batch, seq_len)
+        attention_scores = self.attention(x).squeeze(-1)  # (batch, seq_len)
         attention_weights = F.softmax(attention_scores, dim=1)  # (batch, seq_len)
         
         # Apply attention weights
@@ -94,18 +94,17 @@ class HybridCNNRNNAttention(nn.Module):
             in_ch = out_ch
         
         # Calculate CNN output size dynamically
-        # We need to know the input size to calculate LSTM input_size
         # After 3 pooling layers (stride 2): height / 8, width / 8
         # For input (1, 168, time), after CNN: (cnn_channels[-1], 21, time/8)
-        # LSTM input will be: cnn_channels[-1] * (168 // (2**len(cnn_channels)))
+        # Without pooling, LSTM input would be: 256 * 21 = 5376 (too large, slow training)
+        # Use adaptive pooling to reduce height to 4 for efficiency
+        # Target height of 4 balances feature richness with computational efficiency
         self.cnn_output_channels = cnn_channels[-1]
         self.height_reduction = 2 ** len(cnn_channels)  # Each pooling divides by 2
+        self.target_height = 4  # Configurable dimension reduction target
         
-        # For 168 frequency bins: 168 / 8 = 21
-        # LSTM input size: 256 channels * 21 height = 5376
-        # This is too large! Let's use adaptive pooling to reduce it
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((4, None))  # Reduce height to 4
-        lstm_input_size = self.cnn_output_channels * 4
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((self.target_height, None))
+        lstm_input_size = self.cnn_output_channels * self.target_height
         
         # Bidirectional LSTM
         self.lstm = nn.LSTM(
