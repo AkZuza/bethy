@@ -164,8 +164,13 @@ class ICBHIDataset(Dataset):
         mel_spec = self.feature_extractor.normalize(features['mel_spectrogram'])
         mfcc = self.feature_extractor.normalize(features['mfcc'])
         
-        # Combine features
+        # Combine features - ensure proper channel dimension for CNN input
+        # mel_spec shape: (1, n_mels, time), mfcc shape: (1, n_mfcc, time)
+        # Concatenate along frequency dimension to get (1, n_mels+n_mfcc, time)
         combined_features = torch.cat([mel_spec, mfcc], dim=1)
+        
+        # Add channel dimension if needed for CNN: (1, n_mels+n_mfcc, time) -> keep as is
+        # The model expects (batch, channels, height, width) format
         
         label = sample['label']
         
