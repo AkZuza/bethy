@@ -27,13 +27,16 @@ def train_epoch(
     criterion: nn.Module,
     optimizer: optim.Optimizer,
     device: torch.device,
-    epoch: int
+    epoch: int,
+    writer: SummaryWriter = None,
+    log_gradients: bool = False
 ) -> tuple:
     """Train for one epoch"""
     model.train()
     running_loss = 0.0
     all_preds = []
     all_labels = []
+    total_grad_norm = 0.0
     
     pbar = tqdm(dataloader, desc=f"Epoch {epoch} [Train]")
     for batch_idx, (features, labels, metadata) in enumerate(pbar):
@@ -47,6 +50,11 @@ def train_epoch(
         
         # Backward pass
         loss.backward()
+        
+        # Gradient clipping to prevent exploding gradients
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        total_grad_norm += grad_norm.item()
+        
         optimizer.step()
         
         # Track metrics
@@ -56,12 +64,13 @@ def train_epoch(
         all_labels.extend(labels.cpu().numpy())
         
         # Update progress bar
-        pbar.set_postfix({'loss': loss.item()})
+        pbar.set_postfix({'loss': loss.item(), 'grad_norm': f'{grad_norm.item():.3f}'})
     
     avg_loss = running_loss / len(dataloader)
+    avg_grad_norm = total_grad_norm / len(dataloader)
     accuracy = np.mean(np.array(all_preds) == np.array(all_labels))
     
-    return avg_loss, accuracy, np.array(all_labels), np.array(all_preds)
+    return avg_loss, accuracy, np.array(all_labels), np.array(all_preds), avg_grad_norm
 
 
 def validate_epoch(
@@ -191,9 +200,9 @@ def train(config: dict, args: argparse.Namespace):
     model = create_model(config, device)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
-    # Loss function with class weights
+    # Loss function with class weights and label smoothing
     class_weights = train_dataset.class_weights.to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
     
     # Optimizer
     optimizer = optim.Adam(
@@ -205,6 +214,12 @@ def train(config: dict, args: argparse.Namespace):
     # Learning rate scheduler
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=5, verbose=True
+    )
+    
+    # Learning rate warmup for first few epochs
+    warmup_epochs = 5
+    warmup_scheduler = optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.1, total_iters=warmup_epochs
     )
     
     # Early stopping
@@ -240,8 +255,8 @@ def train(config: dict, args: argparse.Namespace):
         print("-" * 80)
         
         # Train
-        train_loss, train_acc, train_labels, train_preds = train_epoch(
-            model, train_loader, criterion, optimizer, device, epoch
+        train_loss, train_acc, train_labels, train_preds, train_grad_norm = train_epoch(
+            model, train_loader, criterion, optimizer, device, epoch, writer
         )
         
         # Validate
@@ -253,7 +268,10 @@ def train(config: dict, args: argparse.Namespace):
         val_metrics = metrics_calc.calculate_metrics(val_labels, val_preds, val_probas)
         
         # Update learning rate
-        scheduler.step(val_loss)
+        if epoch <= warmup_epochs:
+            warmup_scheduler.step()
+        else:
+            scheduler.step(val_loss)
         
         # Update history
         history['train_loss'].append(train_loss)
@@ -269,6 +287,11 @@ def train(config: dict, args: argparse.Namespace):
         writer.add_scalar('Accuracy/val', val_acc, epoch)
         writer.add_scalar('ICBHI_Score/val', val_metrics['icbhi_score'], epoch)
         writer.add_scalar('F1_Score/val', val_metrics['f1_macro'], epoch)
+        writer.add_scalar('GradientNorm/train', train_grad_norm, epoch)
+        
+        # Log learning rate
+        current_lr = optimizer.param_groups[0]['lr']
+        writer.add_scalar('LearningRate', current_lr, epoch)
         
         # Print epoch summary
         print(f"\nTrain Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")

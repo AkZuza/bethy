@@ -94,11 +94,16 @@ class FeatureExtractor:
             'mfcc': mfcc
         }
     
-    def normalize(self, features: torch.Tensor) -> torch.Tensor:
-        """Normalize features to zero mean and unit variance"""
-        mean = features.mean()
-        std = features.std()
-        return (features - mean) / (std + 1e-9)
+    def normalize(self, features: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+        """
+        Normalize features to zero mean and unit variance
+        Note: For training stability, normalize across frequency axis while preserving temporal information
+        """
+        # Normalize across frequency dimension (dim=1 for mel/mfcc features)
+        # This preserves temporal patterns while ensuring consistent feature scales
+        mean = features.mean(dim=1, keepdim=True)
+        std = features.std(dim=1, keepdim=True)
+        return (features - mean) / (std + eps)
 
 
 def compute_deltas(features: torch.Tensor, width: int = 9) -> torch.Tensor:

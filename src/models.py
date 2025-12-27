@@ -93,13 +93,23 @@ class HybridCNNRNNAttention(nn.Module):
             self.cnn_blocks.append(CNNBlock(in_ch, out_ch))
             in_ch = out_ch
         
-        # Calculate CNN output size (depends on input size and pooling)
-        # After 3 pooling layers with stride 2: size / 8
+        # Calculate CNN output size dynamically
+        # We need to know the input size to calculate LSTM input_size
+        # After 3 pooling layers (stride 2): height / 8, width / 8
+        # For input (1, 168, time), after CNN: (cnn_channels[-1], 21, time/8)
+        # LSTM input will be: cnn_channels[-1] * (168 // (2**len(cnn_channels)))
         self.cnn_output_channels = cnn_channels[-1]
+        self.height_reduction = 2 ** len(cnn_channels)  # Each pooling divides by 2
+        
+        # For 168 frequency bins: 168 / 8 = 21
+        # LSTM input size: 256 channels * 21 height = 5376
+        # This is too large! Let's use adaptive pooling to reduce it
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((4, None))  # Reduce height to 4
+        lstm_input_size = self.cnn_output_channels * 4
         
         # Bidirectional LSTM
         self.lstm = nn.LSTM(
-            input_size=self.cnn_output_channels,
+            input_size=lstm_input_size,
             hidden_size=rnn_hidden_size,
             num_layers=rnn_num_layers,
             batch_first=True,
@@ -116,18 +126,47 @@ class HybridCNNRNNAttention(nn.Module):
         # Classification head
         self.classifier = nn.Sequential(
             nn.Linear(rnn_hidden_size * 2, 512),
+            nn.BatchNorm1d(512),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(256, num_classes)
         )
+        
+        # Initialize weights
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Initialize model weights for better convergence"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LSTM):
+                for name, param in m.named_parameters():
+                    if 'weight_ih' in name:
+                        nn.init.xavier_normal_(param)
+                    elif 'weight_hh' in name:
+                        nn.init.orthogonal_(param)
+                    elif 'bias' in name:
+                        nn.init.constant_(param, 0)
     
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             x: (batch, channels, height, width) - spectrogram
+               Expected: (batch, 1, 168, time_frames)
         Returns:
             logits: (batch, num_classes)
             attention_weights: (batch, seq_len)
@@ -138,12 +177,15 @@ class HybridCNNRNNAttention(nn.Module):
         for cnn_block in self.cnn_blocks:
             x = cnn_block(x)
         
-        # x shape: (batch, channels, height, width)
-        # Reshape for RNN:  combine height dimension with time dimension
-        x = x.permute(0, 3, 2, 1)  # (batch, width, height, channels)
-        x = x.reshape(batch_size, x.size(1), -1)  # (batch, time_steps, features)
+        # x shape after CNN: (batch, cnn_channels[-1], height, width)
+        # Apply adaptive pooling to reduce height dimension
+        x = self.adaptive_pool(x)  # (batch, channels, 4, width)
         
-        # LSTM
+        # Reshape for RNN: use width as time dimension, flatten channels and height
+        x = x.permute(0, 3, 1, 2)  # (batch, width, channels, height)
+        x = x.reshape(batch_size, x.size(1), -1)  # (batch, time_steps, channels*height)
+        
+        # LSTM expects (batch, seq_len, input_size)
         lstm_out, _ = self.lstm(x)  # (batch, seq_len, hidden_size * 2)
         
         # Attention
